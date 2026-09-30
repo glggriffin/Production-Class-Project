@@ -194,7 +194,7 @@ monthly_mods %>%
            size = 0.5) +
   geom_line(
     aes(y = demand),
-    data = monthly_data
+    data = monthly_demand
   )
 ```
 
@@ -202,14 +202,14 @@ Cant Compare to weekly directly, but while weekly models ae more useful for prod
 
 ```{r}
 monthly_mods_rf <- monthly_mods %>%
-  refit(new_data = monthly_data)
+  refit(new_data = monthly_demand)
 
 monthly_mods_rf %>%
   accuracy() %>%
   select(.model, RMSE, MAE, MAPE) %>%
   arrange(RMSE)
 
-monthly_data %>%
+monthly_demand %>%
   autoplot(demand) +
   geom_line(
     aes(
