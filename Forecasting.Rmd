@@ -1,0 +1,315 @@
+---
+title: "Forecasting"
+author: "Gabriel Griffin"
+date: "2026-09-29"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(fpp3)
+
+kit_data <- read_csv("kit_production.csv")
+
+names(kit_data)
+head(kit_data)
+summary(kit_data)
+head(kit_data$Date, 10)
+```
+
+```{r}
+agg_demand <- kit_data %>%
+  mutate(
+    Date = ymd(Date),
+    yw = yearweek(Date)
+  ) %>%
+  group_by(yw) %>%
+  summarise(
+    demand = sum(Demand),
+    .groups = "drop"
+  ) %>%
+  as_tsibble(index = yw)
+```
+
+```{r}
+agg_demand%>%
+  autoplot()
+names(agg_demand)
+```
+Extreme seasonality and overall trend down
+```{r}
+monthly_demand <- kit_data %>%
+  mutate(
+    Date = ymd(Date),
+    ym = yearmonth(Date)
+  ) %>%
+  group_by(ym) %>%
+  summarise(
+    demand = sum(Demand),
+    .groups = "drop"
+  ) %>%
+  as_tsibble(index = ym)
+
+monthly_demand %>%
+  autoplot(demand)
+```
+```{r}
+train_data <- agg_demand %>%
+  filter(year(yw) < 2023)
+
+test_data <- agg_demand %>%
+  filter(year(yw) >= 2023)
+
+library(randtests)
+
+runs.test(train_data$demand)
+
+acf(train_data$demand)
+```
+Autocorrelation with span 7, p values < 0.05, demand isnt random.
+
+```{r}
+dat_mods <- train_data %>%
+  model(
+    MA = ARIMA(
+      demand ~ 0 + pdq(
+        p = 0,
+        d = 0,
+        q = 2
+      )
+    ),
+
+    ARn = ARIMA(
+      demand ~ pdq(
+        p = 4,
+        d = 0,
+        q = 0
+      )
+    )
+  )
+```
+
+```{r}
+dat_mods %>%
+  report() %>%
+  arrange(AIC)
+```
+
+Lower AIC for Arn, but not by much, however AICc and BIC favor MA. Final model selection should be based on out of sample forecast accuracy. AR(4)
+
+```{r}
+dat_mods %>%
+  forecast(new_data = test_data) %>%
+  accuracy(test_data) %>%
+  select(.model, RMSE, MAE, MAPE) %>%
+  arrange(RMSE)
+```
+Error lower in all metrics for ARn.
+
+```{r}
+dat_mods %>%
+  forecast(new_data = test_data) %>%
+  autoplot(test_data,
+           level = 80,
+           size = 0.5) +
+  geom_line(
+    aes(y = demand),
+    data = agg_demand
+  )
+```
+Look similar with ARn appearing as a lower bound for MA.
+
+```{r}
+dat_mods_rf <- dat_mods %>%
+  refit(new_data = agg_demand)
+
+dat_mods_rf %>%
+  accuracy() %>%
+  select(.model, RMSE, MAE, MAPE) %>%
+  arrange(RMSE)
+```
+Refitted shows ARn better in all error metrics with MAE significantly better.
+
+```{r}
+agg_demand %>%
+  filter(year(yw) >= 2023) %>%
+  autoplot(demand) +
+  geom_line(
+    aes(
+      y = .fitted,
+      colour = .model
+    ),
+    data = dat_mods_rf %>%
+      fitted()
+  )
+```
+Want to use holt winters because of reasons stated earlier so use monthly because 52>24.
+
+```{r}
+monthly_train <- monthly_demand %>%
+  filter(year(ym) < 2023)
+
+monthly_test <- monthly_demand %>%
+  filter(year(ym) >= 2023)
+```
+
+```{r}
+acf(monthly_train$demand)
+```
+Autocorrelated with lag 2
+
+```{r}
+monthly_mods <- monthly_train %>%
+  model(
+    ES = ETS(
+      demand ~
+        error("A") +
+        trend("A") +
+        season("A", period = 12)
+    )
+  )
+```
+
+```{r}
+monthly_mods %>%
+  accuracy() %>%
+  select(.model, RMSE, MAE, MAPE) %>%
+  arrange(RMSE)
+
+monthly_mods %>%
+  forecast(new_data = monthly_test) %>%
+  accuracy(monthly_test) %>%
+  select(.model, RMSE, MAE, MAPE) %>%
+  arrange(RMSE)
+
+monthly_mods %>%
+  forecast(new_data = monthly_test) %>%
+  autoplot(monthly_test,
+           level = 80,
+           size = 0.5) +
+  geom_line(
+    aes(y = demand),
+    data = monthly_data
+  )
+```
+
+Cant Compare to weekly directly, but while weekly models ae more useful for production scheduling and inventory, the monthly model is useful for long term trend and seasonality.
+
+```{r}
+monthly_mods_rf <- monthly_mods %>%
+  refit(new_data = monthly_data)
+
+monthly_mods_rf %>%
+  accuracy() %>%
+  select(.model, RMSE, MAE, MAPE) %>%
+  arrange(RMSE)
+
+monthly_data %>%
+  autoplot(demand) +
+  geom_line(
+    aes(
+      y = .fitted,
+      colour = .model
+    ),
+    data = monthly_mods_rf %>%
+      fitted()
+  )
+
+```
+model predicts monthly data very well with error both above and below true.
+
+Actual forecast:
+
+```{r}
+final_model <- agg_demand %>%
+  model(
+    AR4 = ARIMA(
+      demand ~ pdq(
+        p = 4,
+        d = 0,
+        q = 0
+      )
+    )
+  )
+
+final_forecast <- final_model %>%
+  forecast(h = 52)
+```
+
+```{r}
+
+final_forecast %>%
+  autoplot(
+    agg_demand,
+    level = 80
+  ) +
+  labs(
+    x = "Week",
+    y = "Demand",
+    title = "Weekly Demand Forecast Using AR(4)"
+  )
+```
+
+Ar 4 was best on the holdout set but cannot be stably estimated on complete data, need stable model.
+
+```{r}
+ar_mods <- train_data %>%
+  model(
+    AR1 = ARIMA(demand ~ pdq(1, 0, 0)),
+    AR2 = ARIMA(demand ~ pdq(2, 0, 0)),
+    AR3 = ARIMA(demand ~ pdq(3, 0, 0)),
+    AR4 = ARIMA(demand ~ pdq(4, 0, 0)),
+    AR5 = ARIMA(demand ~ pdq(5, 0, 0)),
+    AR6 = ARIMA(demand ~ pdq(6, 0, 0)),
+    AR7 = ARIMA(demand ~ pdq(7, 0, 0))
+  )
+
+ar_mods %>%
+  forecast(new_data = test_data) %>%
+  accuracy(test_data) %>%
+  select(.model, RMSE, MAE, MAPE) %>%
+  arrange(RMSE)
+```
+
+AR3 better than AR4 actually.
+
+```{r}
+final_model <- agg_demand %>%
+  model(
+    AR3 = ARIMA(
+      demand ~ pdq(
+        p = 3,
+        d = 0,
+        q = 0
+      )
+    )
+  )
+```
+
+Still getting numerical instability errors over testing data.
+
+```{r}
+
+full_mods <- agg_demand %>%
+  model(
+    AR1 = ARIMA(demand ~ pdq(1, 0, 0)),
+    AR2 = ARIMA(demand ~ pdq(2, 0, 0)),
+    AR3 = ARIMA(demand ~ pdq(3, 0, 0)),
+    AR4 = ARIMA(demand ~ pdq(4, 0, 0)),
+    AR5 = ARIMA(demand ~ pdq(5, 0, 0)),
+    AR6 = ARIMA(demand ~ pdq(6, 0, 0)),
+    
+    MA1 = ARIMA(demand ~ 0 + pdq(0, 0, 1)),
+    MA2 = ARIMA(demand ~ 0 + pdq(0, 0, 2)),
+    MA3 = ARIMA(demand ~ 0 + pdq(0, 0, 3))
+  )
+
+full_mods %>%
+  report()
+
+```
