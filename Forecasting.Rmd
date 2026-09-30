@@ -313,3 +313,59 @@ full_mods %>%
   report()
 
 ```
+
+AR2 - AR4 have instability issues, use AR 5 as almost as good for error but stable.
+
+```{r}
+final_model <- agg_demand %>%
+  model(
+    AR5 = ARIMA(
+      demand ~ pdq(
+        p = 5,
+        d = 0,
+        q = 0
+      )
+    )
+  )
+
+final_model %>%
+  report()
+```
+
+```{r}
+final_forecast <- final_model %>%
+  forecast(h = 52)
+
+final_forecast %>%
+  autoplot(
+    agg_demand,
+    level = 80
+  ) +
+  labs(
+    x = "Week",
+    y = "Demand",
+    title = "Weekly Demand Forecast Using AR(5)"
+  )
+```
+Doesn't seem to follow overall trend, but matches seasonality very well. I would use holt winters monthly to gauge overall trend then using only local behavior of AR5 adjust holt winters forecast.
+
+```{r}
+monthly_mods_rf <- monthly_mods %>%
+  refit(new_data = monthly_demand)
+
+hw_forecast <- monthly_mods_rf %>%
+  forecast(h = 12)
+
+hw_forecast %>%
+  autoplot(
+    monthly_demand,
+    level = 80
+  ) +
+  labs(
+    x = "Month",
+    y = "Demand",
+    title = "Monthly Demand Forecast Using Holt-Winters"
+  )
+```
+
+
